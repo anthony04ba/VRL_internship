@@ -1,0 +1,69 @@
+"""
+Export the torch hub model to ONNX format. Normalization is done in the model.
+"""
+
+import torch
+import fire
+
+class DinoV2ExportModel(torch.nn.Module):
+    """
+    The model for exporting to ONNX format. Add custom preprocessing and postprocessing here.
+    """
+
+    def __init__(self, meta_arch):#init method of the Metric3DExportModel class
+        super().__init__()
+        #meta_arch is the actual model
+        self.meta_arch = meta_arch
+        self.register_buffer(
+            #These are normalization parameters (the same as the imageNet values) but instead of from 0 to 1 its from 0 to 255
+            "rgb_mean", torch.tensor([123.675, 116.28, 103.53]).view(1, 3, 1, 1).cuda()#mean 
+        )
+        self.register_buffer(
+            "rgb_std", torch.tensor([58.395, 57.12, 57.375]).view(1, 3, 1, 1).cuda()#standard deviation
+        )
+        self.input_size = (512, 960)
+
+    def normalize_image(self, image):#method that normalizes the input image (R,G,B)
+        image = image - self.rgb_mean
+        image = image / self.rgb_std
+        return image
+
+    def forward(self, image):#method to extract patch tokens, calls inference method
+        image = self.normalize_image(image)#normalize the image by calling the normalize_image method
+        with torch.no_grad():#no_grad means no gradient, in other terms no backpropagation only inference
+            features = self.meta_arch.forward_features(image)#Forward features returns a dictionary
+            patch_tokens = features["x_norm_patchtokens"]  # Shape: [1, N_patches=1920, 768]
+        return patch_tokens
+
+
+
+#exporting the model to onnx function
+def main(model_name="dinov2"):
+    from dinov2.models.vision_transformer import vit_base
+    model = vit_base().cuda().eval()#import the model and pass it to the gpu in evaluation mode
+
+    B = 1#batch size
+    dummy_image = torch.randn([B, 3, 512, 960])#generate a random tensor to be passed to the model
+
+    export_model = DinoV2ExportModel(model).cpu().eval()#create an instance of the model
+
+    onnx_output = f"{model_name}.onnx"#onnx output file name 
+    dummy_input = (dummy_image,)#put the dummy input in tuple format
+    torch.onnx.export(
+        export_model,#actual model
+        dummy_input,#input
+        onnx_output,#output onnx file name
+        input_names=["image"],
+        output_names=["patch_tokens"],
+        opset_version=11, #operator specification, which is like the version of the model graph
+    )
+
+    print(f"Successfully exported ONNX model to {onnx_output}")
+
+
+if __name__ == "__main__":#if the code was ran separately, execute
+    #if the code was imported by another function or class do not execute this
+    from fire import Fire #fire is a python CLI or command line interpreter
+    #It turns python functions or classes into commands that can be executed by the shell's OS
+    #It lets you call the main function via the terminal
+    Fire(main)
